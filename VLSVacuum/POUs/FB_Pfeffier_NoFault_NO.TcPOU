@@ -1,0 +1,229 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4022.18">
+  <POU Name="FB_Pfeffier_NoFault_NO" Id="{a23c0232-5fcf-4a94-b41f-e2ce65640ac5}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Pfeffier_NoFault_NO EXTENDS FB_Pump
+(* This function block does basic controls FOR the Pfeiffer Turbo pump connected to the TM700 and TC400 Controllers.
+ Turns off pump in the event of errors/ warnings. Provides interlocking interface.*)
+
+VAR_IN_OUT
+	
+END_VAR
+VAR_INPUT
+	i_xExtIlkOK : BOOL; // Connect to external interlock logic, TRUE if not used.
+END_VAR
+VAR_OUTPUT
+	{attribute 'pytmc' := '
+    pv: 
+	'}
+	iq_stPTM : ST_PfeifferPTM;
+END_VAR
+VAR
+	TOF_RESET: TON :=(PT:=T#1S);
+	(*IO*)
+	i_xAtSpd AT%I*: BOOL; // Normaml operation when true
+	i_xFaultNO AT%I*: BOOL; // Error
+	i_xWarn AT%I*: BOOL;
+ 	i_xRemote AT%I*: BOOL;
+	
+	q_RunDO AT%Q*: BOOL; // Start/Stop for TC110 link this output to the Pumping station bit
+	q_PumpingStation AT%Q*: BOOL; // Start/Stop interlock
+	q_xRemote AT%Q*: BOOL;
+	q_xReset AT%Q*: BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[(* Basic pump supervisory section *)
+
+q_xRemote := TRUE;
+(* Interlock Sum *)
+iq_stPtm.xExtRunOk:= i_xExtILKOk;
+//For compatability with TC110
+(*IF iq_stPTM.xExtRunOk THEN
+	q_PumpingStation:= TRUE;
+ELSE 
+	q_PumpingStation:= FALSE;
+END_IF*)
+
+IF iq_stPTM.xExtRunOk AND NOT (iq_stPTM.i_xFault) (*OR iq_stPTM.i_xTempFault)*) THEN
+	iq_stPTM.q_RunDO:=iq_stPTM.xRunSW;
+	q_PumpingStation:=iq_stPTM.xRunSW;
+ELSE
+	iq_stPTM.xRunSW:=FALSE;
+	iq_stPTM.q_RunDO:=FALSE;
+	q_PumpingStation:=FALSE;
+	//q_xRemote := TRUE;
+END_IF
+
+
+(*Pump STATE*)
+IF iq_stPtm.i_xFault THEN 
+	iq_stPtm.eState := pumpFAULT;
+ELSIF NOT iq_stPtm.q_RunDO AND NOT iq_stPTM.i_xFault THEN
+	iq_stPtm.eState := pumpSTOPPED;
+ELSIF NOT iq_stPtm.i_xAtSpd  AND iq_stPtm.q_RunDO THEN
+	iq_stPtm.eState := pumpSTARTING;
+ELSIF iq_stPtm.i_xAtSpd AND iq_stPtm.q_RunDO THEN
+	iq_stPtm.eState := pumpRUNNING;
+ELSE 
+	iq_stPtm.eState := pumpFAULT;
+END_IF
+
+(*Error Reset*)
+(* to reset the Reset Bit *)
+ IF (iq_stPTM.xResetSW ) THEN  
+	iq_stPTM.q_xReset := TRUE; 
+	q_PumpingStation := TRUE;
+ END_IF
+
+ IF (iq_stPTM.xResetSW) AND (iq_stPTM.i_xFault)  THEN  
+	q_PumpingStation := TRUE;
+ END_IF
+ TOF_RESET (IN:= iq_stPTM.q_xReset, Q => );
+ IF TOF_RESET.Q THEN 
+	iq_stPTM.q_xReset:= FALSE;
+	iq_stPTM.xResetSW := FALSE; 
+ END_IF
+
+(*Soft IO Mapping*)
+ACT_IO();
+// Log States and triggers
+ACT_Logger();
+]]></ST>
+    </Implementation>
+    <Action Name="ACT_IO" Id="{133a688f-dd98-4fb8-80d5-49f5bf5cdde1}">
+      <Implementation>
+        <ST><![CDATA[(*outputs*)
+q_RunDO := iq_stPTM.q_RunDO;
+q_xReset := iq_stPTM.q_xReset;
+//q_xRemote := iq_stPTM.
+//q_PumpingStation AT%Q*: BOOL; // Start/Stop
+	
+(*inputs*)
+iq_stPTM.i_xAtSpd:= i_xAtSpd;
+iq_stPTM.i_xFault:= i_xFaultNO; 
+iq_stPTM.i_xWarn:=  	i_xWarn ;
+	]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ACT_Logger" Id="{225e8c68-a98b-4548-9aab-060b4efe5c70}">
+      <Implementation>
+        <ST><![CDATA[//STATE Logger  
+IF NOT i_xExtIlkOK AND ePrevState = pumpRUNNING THEN
+ 		fbLogger(sMsg:='Lost external interlock while pump was running.', eSevr:=TcEventSeverity.Critical);  	
+END_IF
+
+
+IF ePrevState <> iq_stPTM.eState THEN
+	  CASE iq_stPTM.eState OF
+		pumpFAULT:
+			fbLogger(sMsg:='Pump Fault.', eSevr:=TcEventSeverity.Critical);
+  		pumpSTOPPED:
+			fbLogger(sMsg:='Pump stopped.', eSevr:=TcEventSeverity.Critical);
+		pumpSTARTING:
+			fbLogger(sMsg:='Pump starting.', eSevr:=TcEventSeverity.Info);
+		pumpRUNNING:
+			fbLogger(sMsg:='Pump running.', eSevr:=TcEventSeverity.Info);
+	  END_CASE
+	  ePrevState := iq_stPTM.eState;  
+  END_IF
+  
+// ILK logger
+
+
+
+// Log Action
+tAction(CLK:=  iq_stPTM.q_RunDO);
+IF tAction.Q THEN fbLogger(sMsg:='Pump commanded to start', eSevr:=TcEventSeverity.Info); END_IF
+
+
+// Log FAULT
+tFault(CLK:= NOT iq_stPTM.i_xFault);
+IF tFault.Q THEN fbLogger(sMsg:='Pump Lost Alarm OK bit', eSevr:=TcEventSeverity.Critical); END_IF
+
+]]></ST>
+      </Implementation>
+    </Action>
+    <Method Name="M_Serial_IO" Id="{a62586d0-dbc3-4cba-a95b-31ac8fbcae65}">
+      <Declaration><![CDATA[METHOD PUBLIC M_Serial_IO : BOOL
+VAR_INPUT
+	st_Pfeiffer_RBK: ST_PfeifferStatus;
+END_VAR
+VAR_IN_OUT
+	st_Pfeiffer_CTRL: ST_PfeifferControl;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[(* This function block is used to map the IO points from the pfeiffer structures
+to the generic turbo structures *)
+(*
+if (bInit) Then
+	bInit := False;
+	st_Pfeiffer_CTRL.diSetRotationSpeed_309 := st_Pfeiffer_RBK.diActiveRotationSpeed_309;
+END_IF*)
+
+(* Controls *) (* Controls is via DIO*)
+st_Pfeiffer_CTRL.xPumpingStation_010 := iq_stPTM.q_RunDO;
+//st_Pfeiffer_CTRL.xMotorPump_023 := 1; //Setting always true because parameter 10 alone can enable/disable the pump
+//st_Pfeiffer_CTRL.uiPowerPct_708 := iq_stPTM.q_uiPowerPct;
+//st_Pfeiffer_CTRL.xErrorAck_009 := iq_stPTM.xResetSW;
+
+
+
+(* Readbacks *)
+iq_stPTM.i_xAccel := st_Pfeiffer_RBK.xPumpAccelerating_307;
+//iq_stPTM.i_xAtSpd := st_Pfeiffer_RBK.xRotationSpeedAttn_306; The Atspd is already linked via Digital I/Os
+iq_stPTM.i_diCurSpd := st_Pfeiffer_RBK.diActiveRotationSpeed_309;
+iq_stPTM.i_diPwr := st_Pfeiffer_RBK.diDrivePower_316;
+iq_stPTM.i_diElecTemp := st_Pfeiffer_RBK.diTempElec_326;
+iq_stPTM.i_diBtmTemp := st_Pfeiffer_RBK.diTempPmpBot_330;
+iq_stPTM.i_diBrngTemp := st_Pfeiffer_RBK.diTempBearng_342;
+iq_stPTM.i_diMtrTemp := st_Pfeiffer_RBK.diTempMotor_346;
+iq_stPTM.i_uiPowerPctRbk := st_Pfeiffer_RBK.uiPowerPct_708;
+iq_stPTM.i_rCurrentMon :=  st_Pfeiffer_RBK.lrDriveCurrent_310;
+iq_stPTM.xCommTimeout	:=	st_Pfeiffer_RBK.xTimeout;
+iq_stPTM.i_iErrorCode := st_Pfeiffer_RBK.iErrorCode_303;
+iq_stPTM.i_iWarningCode := st_Pfeiffer_RBK.iWarningCode_303;
+
+(* Check that error acknowledgment is processed *)
+IF st_Pfeiffer_RBK.xErrorAcknowledged THEN
+	st_Pfeiffer_RBK.xErrorAcknowledged := FALSE;
+	st_Pfeiffer_CTRL.xErrorAck_009 := FALSE;
+	iq_stPTM.xResetSW := FALSE;
+END_IF
+
+IF st_Pfeiffer_RBK.sErrorCode_303 = '' THEN
+	;
+ELSIF st_Pfeiffer_RBK.sErrorCode_303 <> '000000' THEN
+iq_stPTM.i_xFault := TRUE;
+ELSE
+iq_stPTM.i_xFault := FALSE;
+END_IF
+
+iq_stPTM.i_dSetSpd := LIMIT (0, iq_stPTM.i_dSetSpd, 1500); // 1500 nominal frequency
+IF ( iq_stPTM.i_dSetSpd <>0) THEN
+	st_Pfeiffer_CTRL.iSetRotationSpeed_707 := DINT_TO_INT(iq_stPTM.i_dSetSpd * 100/1500);
+	st_Pfeiffer_CTRL.iSetRotationSpeed_707 := LIMIT(20, st_Pfeiffer_CTRL.iSetRotationSpeed_707 ,100); // Manual Page 18
+END_IF
+]]></ST>
+      </Implementation>
+    </Method>
+    <LineIds Name="FB_Pfeffier_NoFault_NO">
+      <LineId Id="38" Count="18" />
+      <LineId Id="93" Count="0" />
+      <LineId Id="57" Count="35" />
+      <LineId Id="9" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Pfeffier_NoFault_NO.ACT_IO">
+      <LineId Id="2" Count="9" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Pfeffier_NoFault_NO.ACT_Logger">
+      <LineId Id="2" Count="32" />
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_Pfeffier_NoFault_NO.M_Serial_IO">
+      <LineId Id="13" Count="50" />
+      <LineId Id="5" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>

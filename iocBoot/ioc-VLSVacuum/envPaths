@@ -1,0 +1,2 @@
+epicsEnvSet("IOC_TOP", "/c/Users/jyin/Documents/Github/lcls-plc-vls-tmo/iocBoot/ioc-VLSVacuum")
+epicsEnvSet("IOC_DATA", "C:\Users\jyin/iocData")
